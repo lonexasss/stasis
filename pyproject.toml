@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stasis-launcher"
-version = "0.1.0"
+version = "0.2.0"
 description = "a launcher that keeps the rest of the system out of the way"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -12,6 +12,7 @@ authors = [{ name = "lonex" }]
 
 [project.scripts]
 stasis = "stasis.cli:main"
+stasis-gui = "stasis.gui:main"
 
 [project.optional-dependencies]
 dev = ["pytest"]

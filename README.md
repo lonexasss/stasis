@@ -60,6 +60,20 @@ memory_max = "2G"
 Desktop-critical processes (pipewire, compositor, dbus...) are always
 protected from freezing via a built-in ignore list.
 
+## gui
+
+```console
+$ stasis-gui
+```
+
+dark tkinter window: pick a profile, type a command, run it inside the
+scope; freeze/thaw by pattern without leaving the window.
+still zero dependencies beyond the stdlib.
+
+<!-- screenshot slot:
+![gui](docs/gui.png)
+-->
+
 ## requirements
 
 - linux with systemd and cgroup v2
