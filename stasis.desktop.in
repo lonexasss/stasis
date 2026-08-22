@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Stasis
+Comment=launcher that keeps the system out of the way
+Exec=@BIN@
+Icon=system-run
+Terminal=false
+Categories=Utility;System;
+Keywords=launcher;freeze;performance;

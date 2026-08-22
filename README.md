@@ -60,14 +60,29 @@ memory_max = "2G"
 Desktop-critical processes (pipewire, compositor, dbus...) are always
 protected from freezing via a built-in ignore list.
 
+## install
+
+download `stasis-gui` from
+[releases](https://github.com/lonexasss/stasis/releases), unpack next to
+`install.sh`, run it once:
+
+```console
+$ ./install.sh
+```
+
+`Stasis` appears in the applications menu. no config needed — a default
+one is created on first launch. games get the game profile automatically.
+
 ## gui
 
 ```console
 $ stasis-gui
 ```
 
-dark tkinter window: pick a profile, type a command, run it inside the
-scope; freeze/thaw by pattern without leaving the window.
+a grid of every installed application, like a phone home screen.
+click an app: it launches inside its scope, background noise freezes,
+the governor flips to performance and back when the app closes.
+search field up top, manual freeze/thaw on the right.
 still zero dependencies beyond the stdlib.
 
 <!-- screenshot slot:

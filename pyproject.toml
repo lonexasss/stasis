@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stasis-launcher"
-version = "0.2.0"
+version = "0.3.0"
 description = "a launcher that keeps the rest of the system out of the way"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

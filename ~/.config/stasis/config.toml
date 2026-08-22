@@ -1,0 +1,15 @@
+# stasis config — created automatically on first launch.
+# every table is a profile; apps pick one by category or by binding.
+
+[default]
+# no restrictions, just a clean scope
+
+[game]
+cpu_affinity = "*"
+memory_high = "8G"
+freeze = ["firefox", "discord", "telegram"]
+trim_frozen = false
+
+# per-category defaults: which profile an app gets
+[by_category]
+Game = "game"

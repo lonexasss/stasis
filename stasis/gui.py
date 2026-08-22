@@ -1,4 +1,4 @@
-"""dark tkinter frontend for stasis."""
+"""dark tkinter frontend: an app grid that launches things into stasis."""
 
 import threading
 import tkinter as tk
@@ -7,7 +7,14 @@ from tkinter import messagebox, ttk
 from . import __version__
 from . import freeze as fz
 from . import launch, power
-from .profile import get_profile, load_profiles
+from .desktop import list_apps
+from .profile import (
+    Profile,
+    category_map,
+    ensure_default_config,
+    get_profile,
+    load_profiles,
+)
 from .state import load_state
 
 BG = "#0f1115"
@@ -18,7 +25,10 @@ ACCENT = "#00ff9c"
 BORDER = "#30363d"
 
 FONT = ("Noto Sans Mono", 10)
+FONT_SMALL = ("Noto Sans Mono", 9)
 FONT_BIG = ("Noto Sans Mono", 11, "bold")
+
+CONFIG_HELP = "~/.config/stasis/config.toml"
 
 
 class StasisGui:
@@ -28,13 +38,28 @@ class StasisGui:
         root.configure(bg=BG)
         self._style()
 
+        created = ensure_default_config(CONFIG_HELP)
+        self.apps = list_apps()
         self.running = False
-        self._build_profile_panel()
-        self._build_run_panel()
+
+        self._build_topbar()
+        self._build_app_grid()
         self._build_freeze_panel()
         self._build_status_bar()
         self.refresh_all()
-        self._poll_threads()
+        if created:
+            self.root.after(
+                300,
+                lambda: messagebox.showinfo(
+                    "stasis",
+                    "welcome!\n\nno config was found, so a default one was "
+                    f"created at {CONFIG_HELP}\napps in the 'Game' category "
+                    "launch with the game profile automatically.",
+                ),
+            )
+        self._poll()
+
+    # ---------- ui plumbing ----------
 
     def _style(self):
         style = ttk.Style(self.root)
@@ -43,108 +68,164 @@ class StasisGui:
         style.configure("TFrame", background=BG)
         style.configure("Panel.TFrame", background=PANEL)
         style.configure("TLabel", background=BG, foreground=FG)
-        style.configure("Header.TLabel", background=BG, foreground=DIM, font=FONT_BIG)
+        style.configure("Dim.TLabel", background=BG, foreground=DIM)
+        style.configure("Header.TLabel", background=PANEL, foreground=DIM, font=FONT_BIG)
         style.configure(
-            "TButton",
-            background=PANEL,
-            foreground=FG,
-            bordercolor=BORDER,
-            focuscolor=ACCENT,
+            "Tile.TButton", background=PANEL, foreground=FG, bordercolor=BORDER,
+            font=FONT, padding=(8, 10),
         )
         style.map(
-            "Run.TButton",
-            background=[("active", ACCENT), ("!disabled", PANEL)],
+            "Tile.TButton",
+            background=[("active", ACCENT)],
             foreground=[("active", "#000000")],
         )
-        style.configure("TEntry", fieldbackground=PANEL, foreground=FG, insertcolor=FG)
         style.configure(
-            "TListbox",
-            background=PANEL,
-            foreground=FG,
-            highlightthickness=1,
-            highlightbackground=BORDER,
+            "TButton", background=PANEL, foreground=FG, bordercolor=BORDER
         )
+        style.configure("TEntry", fieldbackground=PANEL, foreground=FG, insertcolor=FG)
 
-    def _panel(self, parent, **grid):
-        frame = ttk.Frame(parent, style="Panel.TFrame")
-        frame.grid(**grid, sticky="nsew", padx=8, pady=4)
-        return frame
-
-    def _build_profile_panel(self):
-        panel = self._panel(self.root, row=0, column=0)
-        ttk.Label(panel, text="PROFILES", style="Header.TLabel").pack(anchor="w", pady=(6, 2))
-        self.profile_list = tk.Listbox(
-            panel,
-            height=6,
-            bg=PANEL,
-            fg=FG,
-            selectbackground=ACCENT,
-            selectforeground="#000000",
-            relief="flat",
-            highlightthickness=1,
-            highlightbackground=BORDER,
-            font=FONT,
+    def _build_topbar(self):
+        bar = ttk.Frame(self.root)
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 0))
+        ttk.Label(bar, text="search:", style="Dim.TLabel").pack(side="left")
+        self.search_var = tk.StringVar()
+        entry = ttk.Entry(bar, textvariable=self.search_var, width=24)
+        entry.pack(side="left", padx=(6, 14))
+        entry.bind("<KeyRelease>", lambda _e: self.render_grid())
+        ttk.Label(bar, text="launch profile:", style="Dim.TLabel").pack(side="left")
+        self.profile_var = tk.StringVar(value="default")
+        self.profile_box = ttk.Combobox(
+            bar, textvariable=self.profile_var, state="readonly", width=12
         )
-        self.profile_list.pack(fill="both", expand=True, pady=(0, 4))
+        self.profile_box.pack(side="left", padx=(6, 0))
 
-    def _build_run_panel(self):
-        panel = self._panel(self.root, row=0, column=1)
-        ttk.Label(panel, text="COMMAND", style="Header.TLabel").pack(anchor="w", pady=(6, 2))
-        self.command_entry = ttk.Entry(panel, font=FONT)
-        self.command_entry.pack(fill="x", pady=(0, 6))
-        self.command_entry.insert(0, "")
-        self.dry_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(panel, text="dry run", variable=self.dry_var).pack(anchor="w")
-        self.run_button = ttk.Button(
-            panel, text="RUN", style="Run.TButton", command=self.on_run, width=12
+    def _build_app_grid(self):
+        outer = ttk.Frame(self.root)
+        outer.grid(row=1, column=0, sticky="nsew", padx=8, pady=6)
+        self.grid_canvas = tk.Canvas(
+            outer, bg=BG, highlightthickness=1, highlightbackground=BORDER
         )
-        self.run_button.pack(anchor="e", pady=6)
+        scroll = ttk.Scrollbar(outer, orient="vertical", command=self.grid_canvas.yview)
+        self.grid_inner = ttk.Frame(self.grid_canvas, style="Panel.TFrame")
+        self.grid_inner.bind(
+            "<Configure>",
+            lambda e: self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all")),
+        )
+        self.grid_window = self.grid_canvas.create_window((0, 0), window=self.grid_inner, anchor="nw")
+        self.grid_canvas.configure(yscrollcommand=scroll.set)
+        self.grid_canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.grid_canvas.bind_all("<MouseWheel>", lambda e: self.grid_canvas.yview_scroll(-e.delta // 120, "units"))
+        self.root.grid_columnconfigure(0, weight=3)
+        self.root.grid_rowconfigure(1, weight=1)
+
+    def render_grid(self):
+        for child in self.grid_inner.winfo_children():
+            child.destroy()
+        query = self.search_var.get().lower().strip()
+        columns = max(1, self.grid_canvas.winfo_width() // 170 or 4)
+        shown = 0
+        for app in self.apps:
+            if query and query not in app["name"].lower():
+                continue
+            tile = ttk.Button(
+                self.grid_inner,
+                text=app["name"],
+                style="Tile.TButton",
+                width=16,
+                command=lambda a=app: self.on_launch(a),
+            )
+            tile.grid(row=shown // columns, column=shown % columns, padx=5, pady=5, sticky="nsew")
+            shown += 1
+        if shown == 0:
+            ttk.Label(
+                self.grid_inner,
+                text="nothing found" if query else "no applications discovered",
+                style="Dim.TLabel",
+            ).grid(row=0, column=0, padx=12, pady=12)
 
     def _build_freeze_panel(self):
-        panel = self._panel(self.root, row=1, column=0, rowspan=1)
-        ttk.Label(panel, text="FROZEN PROCESSES", style="Header.TLabel").pack(anchor="w", pady=(6, 2))
+        panel = ttk.Frame(self.root, style="Panel.TFrame")
+        panel.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=6)
+        ttk.Label(panel, text="FROZEN", style="Header.TLabel").pack(anchor="w", padx=8, pady=(6, 2))
         self.frozen_list = tk.Listbox(
-            panel,
-            height=7,
-            bg=PANEL,
-            fg=FG,
-            relief="flat",
-            highlightthickness=1,
-            highlightbackground=BORDER,
-            font=FONT,
+            panel, height=12, bg=PANEL, fg=FG, relief="flat",
+            highlightthickness=1, highlightbackground=BORDER, font=FONT_SMALL, width=22,
         )
-        self.frozen_list.pack(fill="both", expand=True)
+        self.frozen_list.pack(fill="both", expand=True, padx=8)
 
+        self.pattern_entry = ttk.Entry(panel, font=FONT_SMALL)
+        self.pattern_entry.pack(fill="x", padx=8, pady=(6, 2))
         row = ttk.Frame(panel, style="Panel.TFrame")
-        row.pack(fill="x", pady=6)
-        self.pattern_entry = ttk.Entry(row, width=18, font=FONT)
-        self.pattern_entry.pack(side="left", padx=(0, 6))
-        ttk.Button(row, text="freeze", command=self.on_freeze).pack(side="left", padx=(0, 4))
-        ttk.Button(row, text="thaw all", command=self.on_thaw).pack(side="left")
+        row.pack(fill="x", padx=8, pady=(2, 8))
+        ttk.Button(row, text="freeze", command=self.on_freeze).pack(side="left", expand=True, fill="x", padx=(0, 3))
+        ttk.Button(row, text="thaw all", command=self.on_thaw).pack(side="left", expand=True, fill="x", padx=(3, 0))
 
     def _build_status_bar(self):
         self.status = tk.StringVar(value="")
-        bar = tk.Label(
-            self.root,
-            textvariable=self.status,
-            bg=BG,
-            fg=DIM,
-            anchor="w",
-            font=("Noto Sans Mono", 9),
-        )
-        bar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 6))
+        tk.Label(
+            self.root, textvariable=self.status, bg=BG, fg=DIM,
+            anchor="w", font=FONT_SMALL,
+        ).grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 6))
 
     # ---------- actions ----------
 
+    def profile_for(self, app: dict) -> str:
+        bindings = category_map(CONFIG_HELP)
+        for category in app["categories"]:
+            if category in bindings:
+                return bindings[category]
+        return self.profile_var.get() or "default"
+
+    def on_launch(self, app: dict):
+        if self.running:
+            return
+        try:
+            profile = get_profile(CONFIG_HELP, self.profile_for(app))
+        except SystemExit as e:
+            messagebox.showerror("stasis", str(e))
+            return
+
+        def worker(p: Profile = profile, cmd: list[str] = app["exec"]):
+            self.running = True
+            state: dict = {}
+            try:
+                fz.freeze(p.freeze, ignore=p.ignore)
+                if p.governor:
+                    power.set_governor(p.governor, state)
+                code = launch.run_in_scope(p, cmd)
+            except SystemExit as e:
+                self.root.after(0, lambda: messagebox.showerror("stasis", str(e)))
+            finally:
+                if p.governor:
+                    power.restore_governors(state)
+                fz.thaw()
+                self.running = False
+                self.root.after(0, self.refresh_all)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.status.set(f"launched: {app['name']} (profile: {profile.name})")
+
+    def on_freeze(self):
+        raw = self.pattern_entry.get().strip()
+        if not raw:
+            return
+        fz.freeze([p for p in raw.replace(",", " ").split() if p])
+        self.pattern_entry.delete(0, "end")
+        self.refresh_all()
+
+    def on_thaw(self):
+        fz.thaw()
+        self.refresh_all()
+
     def refresh_all(self):
         try:
-            profiles = load_profiles_default()
-            self.profile_list.delete(0, "end")
-            for name in sorted(profiles):
-                self.profile_list.insert("end", name)
-        except SystemExit as e:
-            self.profile_list.delete(0, "end")
-            self.profile_list.insert("end", "(no config)")
+            names = sorted(load_profiles(CONFIG_HELP))
+            self.profile_box["values"] = names
+            if not self.profile_box.get():
+                self.profile_box.set("default" if "default" in names else (names[0] if names else ""))
+        except SystemExit:
+            pass
 
         self.frozen_list.delete(0, "end")
         for pid in load_state().get("frozen_pids", []):
@@ -155,90 +236,19 @@ class StasisGui:
                 self.frozen_list.insert("end", f"{pid:>7}  (gone)")
 
         govs = sorted(set(power.current_governors().values()))
-        self.status.set(f"governors: {', '.join(govs) or 'n/a'}   ·   config: ~/.config/stasis/config.toml")
+        extra = "   ·   running…" if self.running else ""
+        self.status.set(f"governors: {', '.join(govs) or 'n/a'}{extra}")
 
-    def on_run(self):
-        if self.running:
-            return
-        selection = self.profile_list.curselection()
-        raw = self.command_entry.get().strip()
-        if not selection:
-            messagebox.showwarning("stasis", "pick a profile first")
-            return
-        if not raw:
-            messagebox.showwarning("stasis", "enter a command to run")
-            return
-        name = self.profile_list.get(selection[0])
-        try:
-            profile = get_profile(config_path(), name)
-        except SystemExit as e:
-            messagebox.showerror("stasis", str(e))
-            return
-
-        command = raw.split()
-        if self.dry_var.get():
-            preview = " ".join(launch.build_command(profile, command))
-            messagebox.showinfo("dry run", preview)
-            return
-
-        def worker():
-            self.running = True
-            state = {}
-            try:
-                fz.freeze(profile.freeze, ignore=profile.ignore)
-                if profile.governor:
-                    power.set_governor(profile.governor, state)
-                code = launch.run_in_scope(profile, command)
-            except SystemExit as e:
-                self.root.after(0, lambda: messagebox.showerror("stasis", str(e)))
-            except FileNotFoundError:
-                self.root.after(0, lambda: messagebox.showerror("stasis", "systemd-run not found"))
-            finally:
-                if profile.governor:
-                    power.restore_governors(state)
-                fz.thaw()
-                self.running = False
-                self.root.after(0, self.refresh_all)
-            if isinstance(locals().get("code"), int):
-                self.root.after(0, lambda c=code: self.status.set(f"last exit code: {c}"))
-
-        self.run_button.state(["disabled"])
-        threading.Thread(target=worker, daemon=True).start()
-
-    def on_freeze(self):
-        raw = self.pattern_entry.get().strip()
-        if not raw:
-            return
-        patterns = [p for p in raw.replace(",", " ").split() if p]
-        pids = fz.freeze(patterns)
-        self.refresh_all()
-        self.pattern_entry.delete(0, "end")
-
-    def on_thaw(self):
-        fz.thaw()
-        self.refresh_all()
-
-    def _poll_threads(self):
+    def _poll(self):
         if not self.running:
-            self.run_button.state(["!disabled"])
             self.refresh_all()
-        self.root.after(1500, self._poll_threads)
-
-
-def config_path():
-    import os
-    return os.path.expanduser("~/.config/stasis/config.toml")
-
-
-def load_profiles_default():
-    from .profile import load_profiles
-    return load_profiles(config_path())
+        self.root.after(2000, self._poll)
 
 
 def main():
     root = tk.Tk()
-    root.geometry("760x420")
-    root.minsize(640, 380)
+    root.geometry("980x560")
+    root.minsize(760, 420)
     StasisGui(root)
     root.mainloop()
 
